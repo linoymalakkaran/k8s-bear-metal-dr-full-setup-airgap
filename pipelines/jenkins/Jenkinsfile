@@ -1,0 +1,418 @@
+// Jenkinsfile for building and deploying applications to Kubernetes
+// This pipeline builds Docker images, runs tests, and deploys to K8s
+
+@Library('shared-library') _
+
+pipeline {
+    agent {
+        kubernetes {
+            label 'build-agent'
+            defaultContainer 'jnlp'
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+    app: build-pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: docker
+    image: docker:24.0.0-dind
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+    securityContext:
+      privileged: true
+  
+  - name: kubectl
+    image: bitnami/kubectl:1.28
+    command:
+    - cat
+    tty: true
+  
+  - name: helm
+    image: alpine/helm:3.13.0
+    command:
+    - cat
+    tty: true
+  
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+    - name: maven-cache
+      mountPath: /root/.m2
+  
+  volumes:
+  - name: docker-sock
+    hostPath:
+      path: /var/run/docker.sock
+  - name: maven-cache
+    emptyDir: {}
+"""
+        }
+    }
+    
+    environment {
+        // Docker Registry
+        DOCKER_REGISTRY = 'registry.k8s.internal'
+        DOCKER_REGISTRY_CREDS = credentials('docker-registry-credentials')
+        
+        // Kubernetes
+        KUBE_NAMESPACE = "${env.BRANCH_NAME == 'main' ? 'production' : 'staging'}"
+        
+        // Application
+        APP_NAME = 'sample-app'
+        IMAGE_TAG = "${env.GIT_COMMIT.take(8)}"
+        
+        // Helm
+        HELM_CHART_PATH = './helm-charts/applications/sample-app'
+        
+        // Notification
+        SLACK_CHANNEL = '#deployments'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "Checking out code..."
+                    checkout scm
+                    
+                    // Get commit info
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.GIT_AUTHOR = sh(
+                        script: 'git log -1 --pretty=%an',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Build Application') {
+            when {
+                expression { fileExists('pom.xml') }
+            }
+            steps {
+                container('maven') {
+                    script {
+                        echo "Building Java application..."
+                        sh '''
+                            mvn clean package -DskipTests
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        container('maven') {
+                            script {
+                                echo "Running unit tests..."
+                                sh '''
+                                    mvn test
+                                '''
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                
+                stage('Code Quality') {
+                    steps {
+                        container('maven') {
+                            script {
+                                echo "Running code quality checks..."
+                                sh '''
+                                    mvn verify sonar:sonar \
+                                        -Dsonar.projectKey=${APP_NAME} \
+                                        -Dsonar.host.url=${SONAR_URL} || true
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                container('docker') {
+                    script {
+                        echo "Building Docker image..."
+                        
+                        // Login to registry
+                        sh """
+                            echo ${DOCKER_REGISTRY_CREDS_PSW} | \
+                            docker login ${DOCKER_REGISTRY} \
+                            -u ${DOCKER_REGISTRY_CREDS_USR} \
+                            --password-stdin
+                        """
+                        
+                        // Build image
+                        sh """
+                            docker build \
+                                -t ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG} \
+                                -t ${DOCKER_REGISTRY}/${APP_NAME}:latest \
+                                --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                                --build-arg GIT_COMMIT=${GIT_COMMIT} \
+                                .
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                container('docker') {
+                    script {
+                        echo "Scanning Docker image for vulnerabilities..."
+                        
+                        // Using Trivy for scanning
+                        sh """
+                            docker run --rm \
+                                -v /var/run/docker.sock:/var/run/docker.sock \
+                                aquasec/trivy:latest image \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 0 \
+                                ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                container('docker') {
+                    script {
+                        echo "Pushing Docker image to registry..."
+                        sh """
+                            docker push ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                            docker push ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                container('helm') {
+                    script {
+                        echo "Deploying to staging environment..."
+                        
+                        sh """
+                            helm upgrade --install ${APP_NAME} ${HELM_CHART_PATH} \
+                                --namespace staging \
+                                --create-namespace \
+                                --set image.repository=${DOCKER_REGISTRY}/${APP_NAME} \
+                                --set image.tag=${IMAGE_TAG} \
+                                --set replicaCount=2 \
+                                -f ${HELM_CHART_PATH}/values-staging.yaml \
+                                --wait \
+                                --timeout 5m
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                container('kubectl') {
+                    script {
+                        echo "Running integration tests..."
+                        
+                        // Wait for deployment to be ready
+                        sh """
+                            kubectl rollout status deployment/${APP_NAME} \
+                                -n staging \
+                                --timeout=5m
+                        """
+                        
+                        // Run smoke tests
+                        sh """
+                            kubectl run smoke-test \
+                                --image=curlimages/curl:latest \
+                                --rm -i --restart=Never \
+                                -n staging \
+                                -- curl -f http://${APP_NAME}.staging.svc.cluster.local/health
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Approval for Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "Waiting for approval to deploy to production..."
+                    
+                    timeout(time: 24, unit: 'HOURS') {
+                        input message: 'Deploy to Production?',
+                              submitter: 'admin,ops-team',
+                              parameters: [
+                                  choice(
+                                      name: 'DEPLOY_STRATEGY',
+                                      choices: ['rolling', 'blue-green', 'canary'],
+                                      description: 'Deployment strategy'
+                                  )
+                              ]
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('helm') {
+                    script {
+                        echo "Deploying to production environment..."
+                        
+                        sh """
+                            helm upgrade --install ${APP_NAME} ${HELM_CHART_PATH} \
+                                --namespace production \
+                                --create-namespace \
+                                --set image.repository=${DOCKER_REGISTRY}/${APP_NAME} \
+                                --set image.tag=${IMAGE_TAG} \
+                                --set replicaCount=3 \
+                                -f ${HELM_CHART_PATH}/values-production.yaml \
+                                --wait \
+                                --timeout 10m \
+                                --atomic \
+                                --cleanup-on-fail
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Production Verification') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('kubectl') {
+                    script {
+                        echo "Verifying production deployment..."
+                        
+                        // Check deployment status
+                        sh """
+                            kubectl rollout status deployment/${APP_NAME} \
+                                -n production \
+                                --timeout=10m
+                        """
+                        
+                        // Get deployment info
+                        sh """
+                            kubectl get pods -n production -l app.kubernetes.io/name=${APP_NAME}
+                        """
+                        
+                        // Run health check
+                        sh """
+                            kubectl run health-check \
+                                --image=curlimages/curl:latest \
+                                --rm -i --restart=Never \
+                                -n production \
+                                -- curl -f http://${APP_NAME}.production.svc.cluster.local/health
+                        """
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            script {
+                echo "Pipeline succeeded!"
+                
+                // Send success notification
+                // slackSend(
+                //     channel: env.SLACK_CHANNEL,
+                //     color: 'good',
+                //     message: """
+                //         ✅ Deployment Successful
+                //         App: ${APP_NAME}
+                //         Environment: ${KUBE_NAMESPACE}
+                //         Version: ${IMAGE_TAG}
+                //         Author: ${GIT_AUTHOR}
+                //         Build: ${BUILD_URL}
+                //     """
+                // )
+            }
+        }
+        
+        failure {
+            script {
+                echo "Pipeline failed!"
+                
+                // Send failure notification
+                // slackSend(
+                //     channel: env.SLACK_CHANNEL,
+                //     color: 'danger',
+                //     message: """
+                //         ❌ Deployment Failed
+                //         App: ${APP_NAME}
+                //         Environment: ${KUBE_NAMESPACE}
+                //         Author: ${GIT_AUTHOR}
+                //         Build: ${BUILD_URL}
+                //     """
+                // )
+            }
+        }
+        
+        always {
+            // Cleanup
+            script {
+                echo "Cleaning up..."
+                sh 'docker system prune -f || true'
+            }
+            
+            // Archive artifacts
+            archiveArtifacts artifacts: '**/target/*.jar', allowEmptyArchive: true
+            
+            // Cleanup workspace
+            cleanWs()
+        }
+    }
+}

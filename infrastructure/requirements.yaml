@@ -1,0 +1,169 @@
+# Infrastructure Requirements Specification
+
+## Summary
+
+This file documents the complete infrastructure requirements for the production Kubernetes cluster.
+
+## Hardware Inventory
+
+### Primary Datacenter (DC1)
+
+```yaml
+primary_datacenter:
+  location: "US-East / On-Premise Datacenter 1"
+  
+  master_nodes:
+    count: 3
+    hostname_pattern: "master-[01-03].k8s.internal"
+    specifications:
+      cpu: "8 vCPU"
+      memory: "32 GB RAM"
+      disk_os: "200 GB SSD"
+      disk_etcd: "100 GB SSD (dedicated)"
+      network: "10 Gbps"
+    
+    ip_addresses:
+      - hostname: "master-01"
+        ip: "192.168.10.10"
+        mac: "00:50:56:XX:XX:01"
+      - hostname: "master-02"
+        ip: "192.168.10.11"
+        mac: "00:50:56:XX:XX:02"
+      - hostname: "master-03"
+        ip: "192.168.10.12"
+        mac: "00:50:56:XX:XX:03"
+  
+  worker_nodes:
+    count: 5
+    hostname_pattern: "worker-[01-05].k8s.internal"
+    specifications:
+      cpu: "16 vCPU"
+      memory: "64 GB RAM"
+      disk_os: "200 GB SSD"
+      disk_data: "500 GB SSD"
+      network: "10 Gbps"
+    
+    ip_addresses:
+      - hostname: "worker-01"
+        ip: "192.168.20.10"
+      - hostname: "worker-02"
+        ip: "192.168.20.11"
+      - hostname: "worker-03"
+        ip: "192.168.20.12"
+      - hostname: "worker-04"
+        ip: "192.168.20.13"
+      - hostname: "worker-05"
+        ip: "192.168.20.14"
+  
+  infrastructure_nodes:
+    load_balancers:
+      count: 2
+      specifications:
+        cpu: "4 vCPU"
+        memory: "8 GB RAM"
+        disk: "50 GB SSD"
+      ips:
+        - "192.168.1.10"  # lb-01
+        - "192.168.1.11"  # lb-02
+        - "192.168.1.100" # VIP
+    
+    rancher:
+      count: 1
+      specifications:
+        cpu: "8 vCPU"
+        memory: "16 GB RAM"
+        disk: "200 GB SSD"
+      ip: "192.168.10.20"
+    
+    bastion:
+      count: 1
+      specifications:
+        cpu: "2 vCPU"
+        memory: "4 GB RAM"
+        disk: "50 GB"
+      ip: "192.168.10.30"
+
+### DR Datacenter (DC2)
+
+```yaml
+dr_datacenter:
+  location: "US-West / On-Premise Datacenter 2"
+  mirror_of: "Primary Datacenter"
+  
+  # Mirror configuration of primary
+  # Adjust IP addressing for DR site
+  
+  master_nodes:
+    count: 3
+    ip_range: "10.10.10.10-12"
+  
+  worker_nodes:
+    count: 5
+    ip_range: "10.10.20.10-14"
+```
+
+## Network Requirements
+
+### IP Address Plan
+
+See [Network Design](../docs/02-network-design.md) for complete details.
+
+### Firewall Rules
+
+See [Network Design - Firewall Rules](../docs/02-network-design.md#firewall-rules)
+
+## Storage Requirements
+
+### Primary Storage
+
+```yaml
+storage_requirements:
+  longhorn:
+    deployment: "Distributed across worker nodes"
+    total_capacity: "2.5 TB"
+    per_node: "500 GB dedicated disk"
+    replicas: 3
+  
+  etcd:
+    per_master: "100 GB SSD/NVMe"
+    backup_storage: "500 GB NFS/S3"
+```
+
+## Software Requirements
+
+### Operating System
+
+```yaml
+os_requirements:
+  distribution: "Rocky Linux 8.8"
+  kernel: "4.18+"
+  packages:
+    - container-selinux
+    - iptables
+    - socat
+    - conntrack
+    - ipvsadm
+    - chrony
+```
+
+### Kubernetes Stack
+
+```yaml
+kubernetes_stack:
+  rke2_version: "v1.28.5+rke2r1"
+  rancher_version: "2.8.0"
+  containerd_version: "1.7.x"
+  helm_version: "3.13.x"
+  kubectl_version: "1.28.5"
+```
+
+## Procurement Checklist
+
+- [ ] Hardware ordered and delivered
+- [ ] Network equipment configured
+- [ ] IP addresses allocated
+- [ ] DNS entries created
+- [ ] SSL certificates obtained
+- [ ] Software licenses acquired (if applicable)
+- [ ] Backup storage provisioned
+- [ ] DR site prepared

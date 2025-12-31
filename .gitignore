@@ -1,0 +1,146 @@
+# Kubernetes & Infrastructure Project .gitignore
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate.d/
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Ansible
+*.retry
+.vault_pass
+.vault_password
+
+# Secrets & Credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+secrets/
+credentials/
+*.secret
+*.password
+kubeconfig
+*.kubeconfig
+node-token
+*.token
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.out
+*.err
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Downloaded artifacts (airgap)
+airgap-artifacts/
+*.tar.gz
+*.tar.zst
+*.iso
+downloads/
+
+# Backup files
+backup/
+snapshots/
+*.snapshot
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Helm
+charts/*.tgz
+
+# Personal notes
+NOTES.md
+TODO.md
+scratch/
+
+# Certificates and keys (important!)
+*.crt
+*.key
+*.csr
+*.pem
+ca-bundle.crt
+tls.crt
+tls.key
+
+# etcd data
+etcd-data/
+*.etcd
+
+# Harbor data
+harbor-data/
+
+# Monitoring data
+prometheus-data/
+grafana-data/
